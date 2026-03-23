@@ -1,13 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
 const port = "8080"
+
+var forbiddenWords = [3]string{"kerfuffle", "sharbert", "fornax"}
+
+func cleanChirpBody(sentence string) string {
+	words := strings.Split(sentence, " ")
+	cleaned := make([]string, 0)
+	for i := range(words) {
+		forbidden := false
+		for j := range(forbiddenWords) {
+			if strings.ToLower(words[i]) == forbiddenWords[j] {
+				forbidden = true
+			}
+		}
+		if forbidden {
+			cleaned = append(cleaned, "****")
+		} else {
+			cleaned = append(cleaned, words[i])
+		}
+	}
+	return strings.Join(cleaned, " ")
+}
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
@@ -46,6 +69,50 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	type returnVals struct {
+		Error string `json:"error"`
+		Cleaned string `json:"cleaned_body"`
+	}
+
+	// decode json request
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+	}
+
+	isValidChirp := len(params.Body) <= 140
+	var status int
+
+	// encode json response
+	respBody := returnVals{}
+	if isValidChirp {
+		respBody.Error = ""
+		respBody.Cleaned = cleanChirpBody(params.Body)
+		status = 200
+	} else {
+		respBody.Error = "Chirp is too long"
+		respBody.Cleaned = cleanChirpBody(params.Body)
+		status = 400
+	}
+	dat, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(dat)
+}
+
 func main() {
 	apiCfg := apiConfig{}
 	mux := http.NewServeMux()
@@ -54,6 +121,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", readinessHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.metricsResetHandler)
+	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
 	server := http.Server {
 		Addr: ":" + port,
